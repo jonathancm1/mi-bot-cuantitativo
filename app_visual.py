@@ -205,23 +205,3 @@ for i, par in enumerate(criptomonedas):
         except Exception as e:
             st.error(f"❌ Error en el módulo de {par}: {str(e)}")
 
-# =========================================================
-# CAPA DE PRECIOS REALES EN VIVO SIN BLOQUEOS
-# =========================================================
-import urllib.request
-import json
-
-def obtener_precios_macro_en_vivo():
-    try:
-        base = "https://api.coingecko.com"
-        ruta = "/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=usd"
-        req = urllib.request.Request(base + ruta, headers={'User-Agent': 'Mozilla/5.0'})
-        response = urllib.request.urlopen(req, timeout=5)
-        data = json.loads(response.read().decode())
-        return {
-            "BTC/USDT": float(data['bitcoin']['usd']),
-            "ETH/USDT": float(data['ethereum']['usd']),
-            "SOL/USDT": float(data['solana']['usd'])
-        }
-    except:
-        return {"BTC/USDT": 81292.0, "ETH/USDT": 3450.0, "SOL/USDT": 145.0}

@@ -224,4 +224,4 @@ def obtener_precios_macro_en_vivo():
             "SOL/USDT": float(data['solana']['usd'])
         }
     except:
-        return {"BTC/USDT": 64500.0, "ETH/USDT": 3450.0, "SOL/USDT": 145.0}
+        return {"BTC/USDT": 81292.0, "ETH/USDT": 3450.0, "SOL/USDT": 145.0}

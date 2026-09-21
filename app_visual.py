@@ -128,37 +128,42 @@ for i, par in enumerate(criptomonedas):
             ticker = exchange.fetch_ticker(par)
             precio_real = float(ticker['last'])
             
-            # 2. Descarga a prueba de fallos de historial técnico extrayendo el precio de cierre correcto
+            # 2. Descarga del Historial de 1 Año (365 velas diarias)
+            tendencia_macro = "⚪ Indefinida"
             try:
-                ohlcv = exchange.fetch_ohlcv(par, timeframe='1h', limit=50)
-                precios_cierre = [float(vela[4]) for vela in ohlcv if vela and len(vela) >= 5]
-                if len(precios_cierre) > 0:
-                    sma_50_real = sum(precios_cierre) / len(precios_cierre)
+                ohlcv_anual = exchange.fetch_ohlcv(par, timeframe='1d', limit=365)
+                precios_cierre_anual = [float(vela[4]) for vela in ohlcv_anual if vela and len(vela) >= 5]
+                
+                if len(precios_cierre_anual) >= 200:
+                    sma_200_anual = sum(precios_cierre_anual[-200:]) / 200
+                    if precio_real > sma_200_anual:
+                        tendencia_macro = "🟢 ALCISTA (Seguro operar)"
+                    else:
+                        tendencia_macro = "🔴 BAJISTA (Alto riesgo)"
                 else:
-                    sma_50_real = precio_real
+                    sma_200_anual = precio_real
             except:
-                sma_50_real = precio_real * 0.995
+                sma_200_anual = precio_real
+                tendencia_macro = "⚠️ Error de datos anuales"
                 
             costo_op = precio_real * comision_broker
             
             st.subheader(f"🪙 {par}")
             st.metric(label="Precio en Vivo (USD)", value=f"${precio_real:,.2f}")
-            st.write(f"• **SMA 50 Real Dinámica:** ${sma_50_real:,.2f}")
+            st.write(f"• **Tendencia Macro (1 Año):** {tendencia_macro}")
+            st.write(f"• **Media Anual (SMA 200):** ${sma_200_anual:,.2f}")
             st.write(f"• **Costo de Comisión:** ${costo_op:.4f} USD")
             
-            # Cargar el registro de posición para esta cripto específica de forma segura
             if par in datos_simulador["portafolio"]:
                 pos = datos_simulador["portafolio"][par]
             else:
                 pos = {"comprado": False, "precio_compra": 0.0, "cantidad": 0.0}
                 datos_simulador["portafolio"][par] = pos
             
-            # Extracción limpia del string del activo
             nombre_activo = par.split('/')[0]
             
-            # --- EVALUACIÓN Y COMPRA/VENTA SIMULADA EN TIEMPO REAL ---
             if not pos["comprado"]:
-                if precio_real > sma_50_real and score_promedio >= 0.10:
+                if "ALCISTA" in tendencia_macro and score_promedio >= 0.10:
                     st.success("🟢 ACCIÓN: COMPRA SEGURA 🚀")
                     if bot_activo:
                         if datos_simulador["saldo_usdt"] >= capital_operacion:
@@ -175,33 +180,25 @@ for i, par in enumerate(criptomonedas):
                             st.rerun()
                         else:
                             st.warning("⚠️ Saldo insuficiente para ejecutar la orden en el simulador.")
-                elif precio_real > sma_50_real and score_promedio <= -0.10:
-                    st.error("🔴 ACCIÓN: EVITAR MERCADO (PÁNICO)")
-                elif precio_real < sma_50_real:
-                    st.warning("🟡 ACCIÓN: BLOQUEADO (Mercado Bajista)")
+                elif "BAJISTA" in tendencia_macro:
+                    st.warning("🔴 ACCIÓN: BLOQUEADO (Tendencia Anual Bajista - Alto Riesgo)")
+                elif score_promedio <= -0.10:
+                    st.error("🔴 ACCIÓN: EVITAR MERCADO (PÁNICO EN NOTICIAS)")
                 else:
-                    st.info("⚖️ ACCIÓN: ESPERAR (Rango Lateral)")
+                    st.info("⚖️ ACCIÓN: ESPERAR (Rango Lateral / Sin confirmación)")
             else:
                 st.info(f"💼 Posición Activa: {pos['cantidad']:.4f} {nombre_activo} a ${pos['precio_compra']:,.2f}")
                 rendimiento = (precio_real - pos["precio_compra"]) / pos["precio_compra"]
                 st.write(f"• **Rendimiento:** {rendimiento * 100:+.2f}%")
                 
-                stop_loss = rendimiento <= -0.02
-                take_profit = rendimiento >= 0.04
-                mercado_bajista = precio_real < sma_50_real
-                
-                if (stop_loss or take_profit or mercado_bajista) and bot_activo:
-                    motivo = "STOP_LOSS (-2%)" if stop_loss else "TAKE_PROFIT (+4%)" if take_profit else "MERCADO_BAJISTA"
-                    
-                    efectivo_retornado = (pos["cantidad"] * precio_real) * (1 - comision_broker)
-                    datos_simulador["saldo_usdt"] += efectivo_retornado
-                    
-                    pos.update({"comprado": False, "precio_compra": 0.0, "cantidad": 0.0})
-                    guardar_saldo_simulado(datos_simulador)
-                    st.warning(f"💸 Venta ejecutada por {motivo}. Balance actualizado.")
-                    st.rerun()
-                else:
-                    st.success("🟢 MANTENER POSICIÓN VIRTUAL")
-        except Exception as e:
-            st.error(f"❌ Error en el módulo de {par}: {str(e)}")
+                if rendimiento <= -0.02 or precio_real < sma_200_anual:
+                    st.error("🚨 VENTA: Stop Loss o Cambio de Tendencia Anual a Bajista")
+                    if bot_activo:
+                        valor_venta = pos["cantidad"] * precio_real * (1 - comision_broker)
+                        datos_simulador["saldo_usdt"] += valor_venta
+                        pos.update({"comprado": False, "precio_compra": 0.0, "cantidad": 0.0})
+                        guardar_saldo_simulado(datos_simulador)
+                        st.rerun()
 
+        except Exception as e:
+            st.error(f"Error en el par {par}: {str(e)}")

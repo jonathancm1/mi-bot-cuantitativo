@@ -212,7 +212,7 @@ import urllib.request
 import json
 
 def obtener_precios_macro_en_vivo():
-    """Conecta tu bot a los precios reales del mercado actual"""
+    """Conecta tu bot a los precios reales de mercado actual sin restricciones"""
     try:
         url = "https://coingecko.com"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})

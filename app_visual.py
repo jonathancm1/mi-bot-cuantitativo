@@ -186,19 +186,45 @@ for i, par in enumerate(criptomonedas):
                     st.error("🔴 ACCIÓN: EVITAR MERCADO (PÁNICO EN NOTICIAS)")
                 else:
                     st.info("⚖️ ACCIÓN: ESPERAR (Rango Lateral / Sin confirmación)")
-            else:
-                st.info(f"💼 Posición Activa: {pos['cantidad']:.4f} {nombre_activo} a ${pos['precio_compra']:,.2f}")
-                rendimiento = (precio_real - pos["precio_compra"]) / pos["precio_compra"]
-                st.write(f"• **Rendimiento:** {rendimiento * 100:+.2f}%")
+                else:
+                    st.info(f"💼 Posición Activa: {pos['cantidad']:.4f} {nombre_activo} a ${pos['precio_compra']:,.2f}")
                 
-                if rendimiento <= -0.02 or precio_real < sma_200_anual:
-                    st.error("🚨 VENTA: Stop Loss o Cambio de Tendencia Anual a Bajista")
+                    # --- NUEVA LÓGICA DE TRAILING STOP AUTOMÁTICA (OPCIÓN B - 2%) ---
+                    # Si no existía el registro del precio máximo, lo inicializamos con el precio de compra
+                if "precio_maximo_alcanzado" not in pos or pos["precio_maximo_alcanzado"] == 0.0:
+                    pos["precio_maximo_alcanzado"] = pos["precio_compra"]
+                
+                # Si el precio actual es más alto que el máximo registrado, actualizamos el pico
+                if precio_real > pos["precio_maximo_alcanzado"]:
+                    pos["precio_maximo_alcanzado"] = precio_real
+                    guardar_saldo_simulado(datos_simulador)
+                
+                # Calculamos el rendimiento actual basado en la compra inicial
+                rendimiento = (precio_real - pos["precio_compra"]) / pos["precio_compra"]
+                st.write(f"• **Rendimiento actual:** {rendimiento * 100:+.2f}%")
+                
+                # El suelo de protección móvil se coloca un 2% abajo del precio más alto alcanzado
+                suelo_proteccion_movil = pos["precio_maximo_alcanzado"] * 0.98
+                st.write(f"• **Precio Máximo Alcanzado:** ${pos['precio_maximo_alcanzado']:,.2f}")
+                st.write(f"• **Suelo de Protección Móvil (2%):** ${suelo_proteccion_movil:,.2f}")
+                
+                # CONDICIÓN DE VENTA: Si el precio cae por debajo del suelo móvil O cruza la tendencia anual hacia abajo
+                if precio_real <= suelo_proteccion_movil or precio_real < sma_200_anual:
+                    if precio_real <= suelo_proteccion_movil:
+                        st.error("🚨 VENTA POR TRAILING STOP: Cortando caída y asegurando racha.")
+                    else:
+                        st.error("🚨 VENTA POR CAMBIO DE TENDENCIA: Mercado se volvió Bajista a nivel anual.")
+                        
                     if bot_activo:
                         valor_venta = pos["cantidad"] * precio_real * (1 - comision_broker)
                         datos_simulador["saldo_usdt"] += valor_venta
-                        pos.update({"comprado": False, "precio_compra": 0.0, "cantidad": 0.0})
+                        # Limpiamos la posición por completo para la siguiente operación
+                        pos.update({"comprado": False, "precio_compra": 0.0, "cantidad": 0.0, "precio_maximo_alcanzado": 0.0})
                         guardar_saldo_simulado(datos_simulador)
                         st.rerun()
+
+        except Exception as e:
+            st.error(f"Error en el par {par}: {str(e)}")
 
         except Exception as e:
             st.error(f"Error en el par {par}: {str(e)}")

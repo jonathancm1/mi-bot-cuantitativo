@@ -233,9 +233,10 @@ if bot_activo:
                 ganancia_perdida = retorno_usdt - capital_operacion
                 datos_simulador["saldo_usdt"] += retorno_usdt
                 
-                # Sincronización lineal y directa del historial sin llaves conflictivas
-                datos_simulador["historial"].append([
+                # Formato plano para evitar errores de sintaxis en el historial
+                info_transaccion = [
                     par.replace("-", "/"),
                     "LONG",
                     posicion["precio_entrada"],
                     precio_real,
+                    round(ganancia_perdida, 2),

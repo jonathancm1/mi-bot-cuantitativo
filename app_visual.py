@@ -25,7 +25,7 @@ DB_FILE = "estado_simulador_app.json"
 # --- GESTIÓN ROBUSTA DE BASE DE DATOS LOCAL (JSON) ---
 def cargar_saldo_simulado():
     if not os.path.exists(DB_FILE):
-        estado_inicial = {"saldo_usdt": 1000.0, "portafolio": {}}
+        estado_inicial = {"saldo_usdt": 1000.0, "portafolio": {}, "historial_v2": []}
         for par in ['BTC-USD', 'ETH-USD', 'SOL-USD']:
             estado_inicial["portafolio"][par] = {
                 "comprado": False, 
@@ -41,6 +41,8 @@ def cargar_saldo_simulado():
     with open(DB_FILE, "r") as f:
         try:
             estado = json.load(f)
+            if "historial_v2" not in estado:
+                estado["historial_v2"] = []
             portafolio_limpio = {}
             for par in ['BTC-USD', 'ETH-USD', 'SOL-USD']:
                 if par in estado.get("portafolio", {}):
@@ -50,7 +52,7 @@ def cargar_saldo_simulado():
             estado["portafolio"] = portafolio_limpio
             return estado
         except json.JSONDecodeError:
-            return {"saldo_usdt": 1000.0, "portafolio": {
+            return {"saldo_usdt": 1000.0, "historial_v2": [], "portafolio": {
                 par: {"comprado": False, "tipo_posicion": None, "precio_entrada": 0.0, "precio_maximo_alcanzado": 0.0, "cantidad": 0.0} for par in ['BTC-USD', 'ETH-USD', 'SOL-USD']
             }}
 
@@ -228,15 +230,8 @@ if bot_activo:
             
             if precio_real <= precio_stop_trailing or patron_bajista:
                 retorno_usdt = (posicion["cantidad"] * precio_real) * (1 - comision_broker)
+                ganancia_perdida = retorno_usdt - capital_operacion
                 datos_simulador["saldo_usdt"] += retorno_usdt
                 
-                datos_simulador["portafolio"][par] = {
-                    "comprado": False,
-                    "tipo_posicion": None,
-                    "precio_entrada": 0.0,
-                    "precio_maximo_alcanzado": 0.0,
-                    "cantidad": 0.0
-                }
-                guardar_saldo_simulado(datos_simulador)
-                st.warning(f"📉 **Orden de VENTA ejecutada:** {par} a ${precio_real:,.2f} USD.")
-                st.rerun()
+                # Almacenamiento seguro por strings sencillos separados por comas para evitar errores de sintaxis
+                texto_registro = f"{par.replace('-','/')},LONG,{posicion['precio_entrada']},{precio_real},{round(ganancia_perdida, 2)},{time.strftime('%Y-%m-%d %H:%M:%S')}"

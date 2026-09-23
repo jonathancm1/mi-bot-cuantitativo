@@ -70,13 +70,19 @@ def calcular_rsi(series, period=14):
     rs = gain / (loss + 1e-10)
     return 100 - (100 / (1 + rs))
 
-@st.cache_data(ttl=50)
+@st.cache_data(ttl=30)
 def obtener_datos_historicos_yahoo(ticker):
     try:
         url = f"https://yahoo.com{ticker}?range=1y&interval=1d"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive'
+        }
+        req = urllib.request.Request(url, headers=headers)
         
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with urllib.request.urlopen(req, timeout=15) as response:
             data = json.loads(response.read().decode())
             
         result = data['chart']['result']
@@ -97,8 +103,11 @@ def obtener_datos_historicos_yahoo(ticker):
         df['EMA_200'] = df['close'].ewm(span=200, adjust=False).mean()
         df['RSI'] = calcular_rsi(df['close'], 14)
         
-        df['div_alcista'] = (df['close'] < df['close'].shift(1)) & (df['RSI'] > df['RSI'].shift(1)) & (df['RSI'] < 35)
-        df['div_bajista'] = (df['close'] > df['close'].shift(1)) & (df['RSI'] < df['RSI'].shift(1)) & (df['RSI'] > 65)
+        # MOTOR CUANTITATIVO: DETECCIÓN MATEMÁTICA DE DIVERGENCIAS DEL RSI (Últimas sesiones)
+        # Alcista: Precio hace mínimos más bajos pero el RSI hace mínimos más altos (Fuerza alcista oculta)
+        df['div_alcista'] = (df['close'] < df['close'].shift(2)) & (df['RSI'] > df['RSI'].shift(2)) & (df['RSI'] < 40)
+        # Bajista: Precio hace máximos más altos pero el RSI hace máximos más bajos (Agotamiento de compras)
+        df['div_bajista'] = (df['close'] > df['close'].shift(2)) & (df['RSI'] < df['RSI'].shift(2)) & (df['RSI'] > 60)
         
         return df
     except Exception as e:
@@ -129,10 +138,13 @@ if st.sidebar.button("🔄 Reiniciar Simulador"):
 url_feed = "https://yahoo.com"
 titulares_reales = []
 try:
-    req = urllib.request.Request(url_feed, headers={'User-Agent': 'Mozilla/5.0'})
-    with urllib.request.urlopen(req, timeout=5) as response:
+    headers_rss = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    req_rss = urllib.request.Request(url_feed, headers=headers_rss)
+    with urllib.request.urlopen(req_rss, timeout=8) as response:
         feed = feedparser.parse(response.read())
-        for entrada in feed.entries[:5]: titulares_reales.append(entrada.title.strip())
+        for entrada in feed.entries[:5]: 
+            if hasattr(entrada, 'title'):
+                titulares_reales.append(entrada.title.strip())
 except: pass
 
 if not titulares_reales:
@@ -162,8 +174,14 @@ for i, par in enumerate(criptomonedas):
         ema200 = ultima_vela['EMA_200']
         rsi_actual = ultima_vela['RSI']
         
-        patron_alcista = (precio_real > ema50) and (ema50 > ema200) or ultima_vela['div_alcista']
-        patron_bajista = (precio_real < ema50) and (ema50 < ema200) or ultima_vela['div_bajista']
+        # Filtros de patrones de divergencias calculados
+        tiene_div_alcista = bool(ultima_vela['div_alcista'])
+        tiene_div_bajista = bool(ultima_vela['div_bajista'])
+        
+        # LÓGICA FILTRADA: Para operar LONG exige Tendencia Alcista + Sentimiento O tener una Divergencia Alcista activa
+        patron_alcista = (precio_real > ema50 and ema50 > ema200) or tiene_div_alcista
+        # Para operar SHORT exige Tendencia Bajista + Pánico O tener una Divergencia Bajista activa
+        patron_bajista = (precio_real < ema50 and ema50 < ema200) or tiene_div_bajista
 
         st.subheader(f"🪙 {par.replace('-','/')}")
         st.metric(label="Precio en Vivo (Yahoo)", value=f"${precio_real:,.2f} USD")
@@ -174,8 +192,11 @@ for i, par in enumerate(criptomonedas):
         else:
             st.markdown("📉 Estructura Macro: **Cruce Bajista (Cruz de la Muerte)**")
             
-        if ultima_vela['div_alcista']: st.info("✨ Divergencia Alcista Detectada")
-        if ultima_vela['div_bajista']: st.error("⚠️ Divergencia Bajista Detectada")
+        # Alertas visuales de divergencias en el panel
+        if tiene_div_alcista: 
+            st.info("✨ ¡Divergencia Alcista RSI Confirmada!")
+        if tiene_div_bajista: 
+            st.error("⚠️ ¡Divergencia Bajista RSI Confirmada!")
 
         pos = datos_simulador["portafolio"].get(par, {"comprado": False, "tipo_posicion": None, "precio_entrada": 0.0, "precio_maximo_alcanzado": 0.0, "cantidad": 0.0})
         nombre_activo = par.split('-')[0]
@@ -183,8 +204,8 @@ for i, par in enumerate(criptomonedas):
         # --- LÓGICA DE TRADING EN LA NUBE ---
         if not pos["comprado"]:
             if bot_activo:
-                if patron_alcista and score_promedio >= 0.05:
-                    st.success("🚀 SEÑAL COMPRA: Patrón Histórico + Noticia OK")
+                if patron_alcista and score_promedio >= 0.02:
+                    st.success(f"🚀 SEÑAL OPERACIÓN COMPRA (LONG) EN {nombre_activo}")
                     if datos_simulador["saldo_usdt"] >= capital_operacion:
                         datos_simulador["saldo_usdt"] -= capital_operacion
                         cantidad = (capital_operacion / precio_real) * (1 - comision_broker)
@@ -192,30 +213,8 @@ for i, par in enumerate(criptomonedas):
                         guardar_saldo_simulado(datos_simulador)
                         necesita_recarga = True
                 
-                elif patron_bajista and score_promedio <= -0.05:
-                    st.error("📉 SEÑAL SHORT: Patrón Histórico + Pánico OK")
+                elif patron_bajista and score_promedio <= -0.02:
+                    st.error(f"📉 SEÑAL OPERACIÓN CORTO (SHORT) EN {nombre_activo}")
                     if datos_simulador["saldo_usdt"] >= capital_operacion:
                         datos_simulador["saldo_usdt"] -= capital_operacion
                         cantidad = (capital_operacion / precio_real) * (1 - comision_broker)
-                        pos.update({"comprado": True, "tipo_posicion": "SHORT", "precio_entrada": precio_real, "precio_maximo_alcanzado": precio_real, "cantidad": cantidad})
-                        guardar_saldo_simulado(datos_simulador)
-                        necesita_recarga = True
-                else:
-                    st.info("⚖️ Buscando alineación de patrones...")
-            else:
-                st.info("⚖️ Módulo en pausa.")
-        
-        # --- TRAILING STOP AUTOMÁTICO ---
-        else:
-            tipo = pos["tipo_posicion"]
-            if tipo == "LONG":
-                rendimiento = ((precio_real - pos["precio_entrada"]) / pos["precio_entrada"]) * 100
-                if precio_real > pos["precio_maximo_alcanzado"]:
-                    pos["precio_maximo_alcanzado"] = precio_real
-                    guardar_saldo_simulado(datos_simulador)
-                retroceso = ((pos["precio_maximo_alcanzado"] - precio_real) / pos["precio_maximo_alcanzado"]) * 100
-                
-                if bot_activo and retroceso >= porcentaje_trailing:
-                    st.error("🚨 CORTE AUTOMÁTICO POR TRAILING STOP")
-                    datos_simulador["saldo_usdt"] += (pos["cantidad"] * precio_real) * (1 - comision_broker)
-                    pos.update({"comprado": False, "tipo_posicion": None, "precio_entrada": 0.0, "precio_maximo_alcanzado": 0.0, "cantidad": 0.0})

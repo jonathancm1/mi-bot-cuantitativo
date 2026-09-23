@@ -73,11 +73,12 @@ def calcular_rsi(series, period=14):
     rs = gain / (loss + 1e-10)
     return 100 - (100 / (1 + rs))
 
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=2) # Caché casi nulo para actualización inmediata
 def obtener_datos_historicos_yahoo(ticker):
     try:
         ticker_obj = yf.Ticker(ticker)
-        df = ticker_obj.history(period="1y", interval="1d")
+        # CAMBIO CLAVE: Datos de los últimos 5 días en intervalos de 15 minutos para movimiento constante en tiempo real
+        df = ticker_obj.history(period="5d", interval="15m")
         
         if df.empty:
             return pd.DataFrame()
@@ -160,13 +161,13 @@ for i, par in enumerate(criptomonedas):
         st.subheader(f"🪙 {par.replace('-','/')}")
         st.metric(label="Precio en Vivo (Yahoo)", value=f"${precio_real:,.2f} USD")
         
-        st.write(f"📊 **RSI (14 días):** {rsi_actual:.2f}")
+        st.write(f"📊 **RSI (14 períodos):** {rsi_actual:.2f}")
         if ema50 > ema200:
             st.markdown("📈 Estructura Macro: **Cruce Alcista (Cruz de Oro)**")
         else:
             st.markdown("📉 Estructura Macro: **Cruce Bajista (Cruz de la Muerte)**")
             
-        df_reciente = df_historico.tail(60)
+        df_reciente = df_historico.tail(40)
         fig = go.Figure()
         
         eje_x = df_reciente.iloc[:, 0]
@@ -233,8 +234,6 @@ if bot_activo:
                 ganancia_perdida = retorno_usdt - capital_operacion
                 datos_simulador["saldo_usdt"] += retorno_usdt
                 
-                # CORRECCIÓN: Estructura plana para evitar conflictos con traductores del navegador
                 nuevo_registro = {}
                 nuevo_registro["Par"] = par.replace("-", "/")
                 nuevo_registro["Tipo"] = "LONG"
-                nuevo_registro["Precio Entrada"] = posicion["precio_entrada"]

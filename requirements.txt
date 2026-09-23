@@ -4,3 +4,4 @@ pandas
 nltk
 numpy
 feedparser
+yfinance

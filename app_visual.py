@@ -7,6 +7,7 @@ import yfinance as yf
 import feedparser
 import json
 import os
+import plotly.graph_objects as go  # IMPORTACIÓN GRÁFICA
 
 # --- CONFIGURACIÓN DE INTERFAZ PROFESIONAL ---
 st.set_page_config(page_title="Algoritmo Cuantitativo Cloud 24/7", page_icon="🤖", layout="wide")
@@ -127,7 +128,7 @@ try:
 except: pass
 
 if not titulares_reales:
-    titulares_reales = ["Market volatility stabilizes as global trading volume increases"]
+    titales_reales = ["Market volatility stabilizes as global trading volume increases"]
 
 scores_totales = sum([sia.polarity_scores(t)['compound'] for t in titulares_reales])
 score_promedio = scores_totales / len(titulares_reales) if titulares_reales else 0.0
@@ -163,3 +164,72 @@ for i, par in enumerate(criptomonedas):
             st.markdown("📈 Estructura Macro: **Cruce Alcista (Cruz de Oro)**")
         else:
             st.markdown("📉 Estructura Macro: **Cruce Bajista (Cruz de la Muerte)**")
+            
+        # GENERACIÓN DEL GRÁFICO DE VELAS PROFESIONAL
+        df_reciente = df_historico.tail(60) # Muestra los últimos 60 días para mejor visibilidad
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(
+            x=df_reciente['date'] if 'date' in df_reciente.columns else df_reciente['timestamp'],
+            open=df_reciente['open'], high=df_reciente['high'],
+            low=df_reciente['low'], close=df_reciente['close'],
+            name='Velas'
+        ))
+        fig.add_trace(go.Scatter(x=df_reciente['date'] if 'date' in df_reciente.columns else df_reciente['timestamp'], y=df_reciente['EMA_50'], line=dict(color='orange', width=1.5), name='EMA 50'))
+        fig.add_trace(go.Scatter(x=df_reciente['date'] if 'date' in df_reciente.columns else df_reciente['timestamp'], y=df_reciente['EMA_200'], line=dict(color='blue', width=1.5), name='EMA 200'))
+        fig.update_layout(xaxis_rangeslider_visible=False, height=250, margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+# --- MOTOR DE EJECUCIÓN AUTÓNOMA (COMPRA/VENTA SIMULADA) ---
+if bot_activo:
+    st.markdown("---")
+    st.header("⚡ Registro de Operaciones en Tiempo Real")
+    
+    for par in criptomonedas:
+        df_historico = obtener_datos_historicos_yahoo(par)
+        if df_historico.empty:
+            continue
+            
+        ultima_vela = df_historico.iloc[-1]
+        precio_real = float(ultima_vela['close'])
+        ema50 = ultima_vela['EMA_50']
+        ema200 = ultima_vela['EMA_200']
+        
+        tiene_div_alcista = bool(ultima_vela['div_alcista'])
+        tiene_div_bajista = bool(ultima_vela['div_bajista'])
+        
+        patron_alcista = (precio_real > ema50 and ema50 > ema200) or tiene_div_alcista
+        patron_bajista = (precio_real < ema50 and ema50 < ema200) or tiene_div_bajista
+        
+        posicion = datos_simulador["portafolio"][par]
+        
+        # LÓGICA DE COMPRA (LONG)
+        if not posicion["comprado"] and patron_alcista:
+            if datos_simulador["saldo_usdt"] >= capital_operacion:
+                cantidad_comprada = (capital_operacion * (1 - comision_broker)) / precio_real
+                datos_simulador["saldo_usdt"] -= capital_operacion
+                
+                datos_simulador["portafolio"][par] = {
+                    "comprado": True,
+                    "tipo_posicion": "LONG",
+                    "precio_entrada": precio_real,
+                    "precio_maximo_alcanzado": precio_real,
+                    "cantidad": cantidad_comprada
+                }
+                guardar_saldo_simulado(datos_simulador)
+                st.success(f"🚀 **Orden de COMPRA ejecutada:** {par} a ${precio_real:,.2f} USD")
+                st.rerun()
+                
+        # LÓGICA DE VENTA (TRAILING STOP)
+        elif posicion["comprado"] and posicion["tipo_posicion"] == "LONG":
+            if precio_real > posicion["precio_maximo_alcanzado"]:
+                datos_simulador["portafolio"][par]["precio_maximo_alcanzado"] = precio_real
+                guardar_saldo_simulado(datos_simulador)
+            
+            precio_stop_trailing = posicion["precio_maximo_alcanzado"] * (1 - (porcentaje_trailing / 100))
+            
+            if precio_real <= precio_stop_trailing or patron_bajista:
+                retorno_usdt = (posicion["cantidad"] * precio_real) * (1 - comision_broker)
+                datos_simulador["saldo_usdt"] += retorno_usdt
+                
+                datos_simulador["portafolio"][par] = {
+                    "comprado": False,

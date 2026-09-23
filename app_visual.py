@@ -25,7 +25,7 @@ DB_FILE = "estado_simulador_app.json"
 # --- GESTIÓN ROBUSTA DE BASE DE DATOS LOCAL (JSON) ---
 def cargar_saldo_simulado():
     if not os.path.exists(DB_FILE):
-        estado_inicial = {"saldo_usdt": 1000.0, "portafolio": {}}
+        estado_inicial = {"saldo_usdt": 1000.0, "portafolio": {}, "historial": []}
         for par in ['BTC-USD', 'ETH-USD', 'SOL-USD']:
             estado_inicial["portafolio"][par] = {
                 "comprado": False, 
@@ -41,6 +41,8 @@ def cargar_saldo_simulado():
     with open(DB_FILE, "r") as f:
         try:
             estado = json.load(f)
+            if "historial" not in estado:
+                estado["historial"] = []
             portafolio_limpio = {}
             for par in ['BTC-USD', 'ETH-USD', 'SOL-USD']:
                 if par in estado.get("portafolio", {}):
@@ -50,7 +52,7 @@ def cargar_saldo_simulado():
             estado["portafolio"] = portafolio_limpio
             return estado
         except json.JSONDecodeError:
-            return {"saldo_usdt": 1000.0, "portafolio": {
+            return {"saldo_usdt": 1000.0, "historial": [], "portafolio": {
                 par: {"comprado": False, "tipo_posicion": None, "precio_entrada": 0.0, "precio_maximo_alcanzado": 0.0, "cantidad": 0.0} for par in ['BTC-USD', 'ETH-USD', 'SOL-USD']
             }}
 
@@ -71,7 +73,7 @@ def calcular_rsi(series, period=14):
     rs = gain / (loss + 1e-10)
     return 100 - (100 / (1 + rs))
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=5) # Reducido el caché para actualizaciones rápidas en bucle
 def obtener_datos_historicos_yahoo(ticker):
     try:
         ticker_obj = yf.Ticker(ticker)
@@ -167,8 +169,7 @@ for i, par in enumerate(criptomonedas):
         df_reciente = df_historico.tail(60)
         fig = go.Figure()
         
-        # SOLUCIÓN: Selecciona la primera columna de tiempo dinámicamente sin importar el nombre
-        eje_x = df_reciente[df_reciente.columns[0]]
+        eje_x = df_reciente.iloc[:, 0]
         
         fig.add_trace(go.Candlestick(
             x=eje_x, open=df_reciente['open'], high=df_reciente['high'],
@@ -223,19 +224,17 @@ if bot_activo:
         elif posicion["comprado"] and posicion["tipo_posicion"] == "LONG":
             if precio_real > posicion["precio_maximo_alcanzado"]:
                 datos_simulador["portafolio"][par]["precio_maximo_alcanzado"] = precio_real
-                guardar_sudo_simulado(datos_simulador)
+                guardar_saldo_simulado(datos_simulador)
             
             precio_stop_trailing = posicion["precio_maximo_alcanzado"] * (1 - (porcentaje_trailing / 100))
             
             if precio_real <= precio_stop_trailing or patron_bajista:
                 retorno_usdt = (posicion["cantidad"] * precio_real) * (1 - comision_broker)
+                ganancia_perdida = retorno_usdt - capital_operacion
                 datos_simulador["saldo_usdt"] += retorno_usdt
                 
-                datos_simulador["portafolio"][par] = {
-                    "comprado": False,
-                    "tipo_posicion": None,
-                    "precio_entrada": 0.0,
-                    "precio_maximo_alcanzado": 0.0,
-                    "cantidad": 0.0
-                }
-                guardar_saldo_simulado(datos_simulador)
+                datos_simulador["historial"].append({
+                    "Par": par.replace("-", "/"),
+                    "Tipo": "LONG",
+                    "Precio Entrada": posicion["precio_entrada"],
+                    "Precio Venta": precio_real,

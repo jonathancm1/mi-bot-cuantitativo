@@ -7,7 +7,7 @@ import yfinance as yf
 import feedparser
 import json
 import os
-import plotly.graph_objects as go  # IMPORTACIÓN GRÁFICA
+import plotly.graph_objects as go
 
 # --- CONFIGURACIÓN DE INTERFAZ PROFESIONAL ---
 st.set_page_config(page_title="Algoritmo Cuantitativo Cloud 24/7", page_icon="🤖", layout="wide")
@@ -88,7 +88,6 @@ def obtener_datos_historicos_yahoo(ticker):
         df['EMA_200'] = df['close'].ewm(span=200, adjust=False).mean()
         df['RSI'] = calcular_rsi(df['close'], 14)
         
-        # MOTOR CUANTITATIVO: DETECCIÓN MATEMÁTICA DE DIVERGENCIAS DEL RSI
         df['div_alcista'] = (df['close'] < df['close'].shift(2)) & (df['RSI'] > df['RSI'].shift(2)) & (df['RSI'] < 40)
         df['div_bajista'] = (df['close'] > df['close'].shift(2)) & (df['RSI'] < df['RSI'].shift(2)) & (df['RSI'] > 60)
         
@@ -128,7 +127,7 @@ try:
 except: pass
 
 if not titulares_reales:
-    titales_reales = ["Market volatility stabilizes as global trading volume increases"]
+    titulares_reales = ["Market volatility stabilizes as global trading volume increases"]
 
 scores_totales = sum([sia.polarity_scores(t)['compound'] for t in titulares_reales])
 score_promedio = scores_totales / len(titulares_reales) if titulares_reales else 0.0
@@ -165,17 +164,18 @@ for i, par in enumerate(criptomonedas):
         else:
             st.markdown("📉 Estructura Macro: **Cruce Bajista (Cruz de la Muerte)**")
             
-        # GENERACIÓN DEL GRÁFICO DE VELAS PROFESIONAL
-        df_reciente = df_historico.tail(60) # Muestra los últimos 60 días para mejor visibilidad
+        df_reciente = df_historico.tail(60)
         fig = go.Figure()
+        
+        # Validar la columna de fecha para evitar errores de renderizado
+        eje_x = df_reciente['date'] if 'date' in df_reciente.columns else df_reciente['timestamp']
+        
         fig.add_trace(go.Candlestick(
-            x=df_reciente['date'] if 'date' in df_reciente.columns else df_reciente['timestamp'],
-            open=df_reciente['open'], high=df_reciente['high'],
-            low=df_reciente['low'], close=df_reciente['close'],
-            name='Velas'
+            x=eje_x, open=df_reciente['open'], high=df_reciente['high'],
+            low=df_reciente['low'], close=df_reciente['close'], name='Velas'
         ))
-        fig.add_trace(go.Scatter(x=df_reciente['date'] if 'date' in df_reciente.columns else df_reciente['timestamp'], y=df_reciente['EMA_50'], line=dict(color='orange', width=1.5), name='EMA 50'))
-        fig.add_trace(go.Scatter(x=df_reciente['date'] if 'date' in df_reciente.columns else df_reciente['timestamp'], y=df_reciente['EMA_200'], line=dict(color='blue', width=1.5), name='EMA 200'))
+        fig.add_trace(go.Scatter(x=eje_x, y=df_reciente['EMA_50'], line=dict(color='orange', width=1.5), name='EMA 50'))
+        fig.add_trace(go.Scatter(x=eje_x, y=df_reciente['EMA_200'], line=dict(color='blue', width=1.5), name='EMA 200'))
         fig.update_layout(xaxis_rangeslider_visible=False, height=250, margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(fig, use_container_width=True)
 
@@ -233,3 +233,9 @@ if bot_activo:
                 
                 datos_simulador["portafolio"][par] = {
                     "comprado": False,
+                    "tipo_posicion": None,
+                    "precio_entrada": 0.0,
+                    "precio_maximo_alcanzado": 0.0,
+                    "cantidad": 0.0
+                }
+                guardar_saldo_simulado(datos_simulador)

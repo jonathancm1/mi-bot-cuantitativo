@@ -73,7 +73,7 @@ def calcular_rsi(series, period=14):
     rs = gain / (loss + 1e-10)
     return 100 - (100 / (1 + rs))
 
-@st.cache_data(ttl=5) # Reducido el caché para actualizaciones rápidas en bucle
+@st.cache_data(ttl=5)
 def obtener_datos_historicos_yahoo(ticker):
     try:
         ticker_obj = yf.Ticker(ticker)
@@ -233,8 +233,8 @@ if bot_activo:
                 ganancia_perdida = retorno_usdt - capital_operacion
                 datos_simulador["saldo_usdt"] += retorno_usdt
                 
-                datos_simulador["historial"].append({
-                    "Par": par.replace("-", "/"),
-                    "Tipo": "LONG",
-                    "Precio Entrada": posicion["precio_entrada"],
-                    "Precio Venta": precio_real,
+                # CORRECCIÓN: Estructura plana para evitar conflictos con traductores del navegador
+                nuevo_registro = {}
+                nuevo_registro["Par"] = par.replace("-", "/")
+                nuevo_registro["Tipo"] = "LONG"
+                nuevo_registro["Precio Entrada"] = posicion["precio_entrada"]

@@ -80,8 +80,8 @@ def obtener_datos_historicos_yahoo(ticker):
         if df.empty:
             return pd.DataFrame()
             
-        df.columns = df.columns.str.lower()
         df = df.reset_index()
+        df.columns = df.columns.str.lower()
         df = df.ffill().bfill()
         
         df['EMA_50'] = df['close'].ewm(span=50, adjust=False).mean()
@@ -167,8 +167,8 @@ for i, par in enumerate(criptomonedas):
         df_reciente = df_historico.tail(60)
         fig = go.Figure()
         
-        # Validar la columna de fecha para evitar errores de renderizado
-        eje_x = df_reciente['date'] if 'date' in df_reciente.columns else df_reciente['timestamp']
+        # SOLUCIÓN: Selecciona la primera columna de tiempo dinámicamente sin importar el nombre
+        eje_x = df_reciente[df_reciente.columns[0]]
         
         fig.add_trace(go.Candlestick(
             x=eje_x, open=df_reciente['open'], high=df_reciente['high'],
@@ -223,7 +223,7 @@ if bot_activo:
         elif posicion["comprado"] and posicion["tipo_posicion"] == "LONG":
             if precio_real > posicion["precio_maximo_alcanzado"]:
                 datos_simulador["portafolio"][par]["precio_maximo_alcanzado"] = precio_real
-                guardar_saldo_simulado(datos_simulador)
+                guardar_sudo_simulado(datos_simulador)
             
             precio_stop_trailing = posicion["precio_maximo_alcanzado"] * (1 - (porcentaje_trailing / 100))
             

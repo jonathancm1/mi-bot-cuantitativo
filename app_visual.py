@@ -78,18 +78,12 @@ def calcular_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 # Conexión directa a CoinGecko para precio vivo real y Yahoo para el gráfico histórico
-@st.cache_data(ttl=2)
+
+
 def obtener_datos_historicos_yahoo(ticker):
     try:
-        id_crypto = "bitcoin" if "BTC" in ticker else "ethereum" if "ETH" in ticker else "solana"
-        
-        # 1. Traer precio exacto en tiempo real de CoinGecko
-        url_precio = f"https://coingecko.com{id_crypto}&vs_currencies=usd"
-        respuesta = requests.get(url_precio, timeout=5).json()
-        precio_vivo = float(respuesta[id_crypto]['usd'])
-        
-        # 2. Traer el historial para las gráficas y las EMAs
         ticker_obj = yf.Ticker(ticker)
+        # Descargamos el historial rápido de 1 día
         df = ticker_obj.history(period="1d", interval="1m")
         
         if df.empty:
@@ -99,35 +93,30 @@ def obtener_datos_historicos_yahoo(ticker):
         df.columns = df.columns.str.lower()
         df = df.ffill().bfill()
         
-        # Forzamos que la última vela tenga el precio real en vivo de CoinGecko
-        df.loc[df.index[-1], 'close'] = precio_vivo
+        # CANAL DIRECTO PARA TRAER EL PRECIO EXACTO EN TIEMPO REAL
+        try:
+            id_crypto = "BTC-USD" if "BTC" in ticker else "ETH-USD" if "ETH" in ticker else "SOL-USD"
+            url_precio = f"https://yahoo.com{id_crypto}?interval=1m&range=1d"
+            respuesta = requests.get(url_precio, timeout=2).json()
+            precio_real_vivo = float(respuesta['chart']['result'][0]['meta']['regularMarketPrice'])
+            
+            # Forzamos que la última posición tenga el precio real de este segundo
+            df.loc[df.index[-1], 'close'] = precio_real_vivo
+        except:
+            # Respaldo secundario rápido si el canal directo satura
+            try:
+                df.loc[df.index[-1], 'close'] = float(ticker_obj.fast_info['last_price'])
+            except:
+                pass
         
+        # Volvemos a calcular las EMAs y el RSI con el precio vivo que cambia segundo a segundo
         df['EMA_50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['EMA_200'] = df['close'].ewm(span=200, adjust=False).mean()
         df['RSI'] = calcular_rsi(df['close'], 14)
         
-        df['div_alcista'] = (df['close'] < df['close'].shift(2)) & (df['RSI'] > df['RSI'].shift(2)) & (df['RSI'] < 40)
-        df['div_bajista'] = (df['close'] > df['close'].shift(2)) & (df['RSI'] < df['RSI'].shift(2)) & (df['RSI'] > 60)
-        
         return df
     except Exception as e:
-        # Respaldo de seguridad si CoinGecko excede la cuota gratuita
-        try:
-            ticker_obj = yf.Ticker(ticker)
-            df = ticker_obj.history(period="1d", interval="1m")
-            if not df.empty:
-                df = df.reset_index()
-                df.columns = df.columns.str.lower()
-                df = df.ffill().bfill()
-                df['EMA_50'] = df['close'].ewm(span=50, adjust=False).mean()
-                df['EMA_200'] = df['close'].ewm(span=200, adjust=False).mean()
-                df['RSI'] = calcular_rsi(df['close'], 14)
-                df['div_alcista'] = False
-                df['div_bajista'] = False
-                return df
-        except:
-            pass
-        return pd.DataFrame()
+        return pd.DataFrame() 
 
 # --- INTERFAZ ---
 st.title("🤖 Servidor Cuantitativo Autónoma 24/7 (Inmune a Bloqueos)")
@@ -169,86 +158,172 @@ score_promedio = scores_totales / len(titulares_reales) if titulares_reales else
 # --- EVALUACIÓN EN TIEMPO REAL ---
 st.header("📉 Análisis de Tendencias Históricas y Decisiones en la Nube")
 
-criptomonedas = ['BTC-USD', 'ETH-USD', 'SOL-USD']
-cols = st.columns(3)
+# ACTIVAR EL FRAGMENTO NATIVO CORRECTO DE STREAMLIT
+@st.fragment(run_every=2)
+def mostrar_mercado_y_operar():
+    criptomonedas = ['BTC-USD', 'ETH-USD', 'SOL-USD']
+    cols = st.columns(3)
 
-for i, par in enumerate(criptomonedas):
-    with cols[i]:
-        df_historico = obtener_datos_historicos_yahoo(par)
-        
-        if df_historico.empty:
-            st.error(f"Error al conectar con las nubes de datos para {par}")
-            continue
+    for i, par in enumerate(criptomonedas):
+        with cols[i]:
+            df_historico = pd.DataFrame()
+            precio_real = 0.0
             
-        ultima_vela = df_historico.iloc[-1]
-        precio_real = float(ultima_vela['close'])
-        ema50 = ultima_vela['EMA_50']
-        ema200 = ultima_vela['EMA_200']
-        rsi_actual = ultima_vela['RSI']
-
-        st.subheader(f"🪙 {par.replace('-','/')}")
-        st.metric(label="Precio en Vivo", value=f"${precio_real:,.2f} USD")
-        
-        st.write(f"📊 **RSI (14 días):** {rsi_actual:.2f}")
-        if ema50 > ema200:
-            st.markdown("📈 Estructura Macro: **Cruce Alcista (Cruz de Oro)**")
-        else:
-            st.markdown("📉 Estructura Macro: **Cruce Bajista (Cruz de la Muerte)**")
-            
-        df_reciente = df_historico.tail(60)
-        fig = go.Figure()
-        
-        eje_x = df_reciente.iloc[:, 0]
-        
-        fig.add_trace(go.Candlestick(
-            x=eje_x, open=df_reciente['open'], high=df_reciente['high'],
-            low=df_reciente['low'], close=df_reciente['close'], name='Velas'
-        ))
-        fig.add_trace(go.Scatter(x=eje_x, y=df_reciente['EMA_50'], line=dict(color='orange', width=1.5), name='EMA 50'))
-        fig.add_trace(go.Scatter(x=eje_x, y=df_reciente['EMA_200'], line=dict(color='blue', width=1.5), name='EMA 200'))
-        fig.update_layout(xaxis_rangeslider_visible=False, height=250, margin=dict(l=10, r=10, t=10, b=10))
-        st.plotly_chart(fig, use_container_width=True)
-
-# --- MOTOR DE EJECUCIÓN AUTÓNOMA (COMPRA/VENTA SIMULADA) ---
-if bot_activo:
-    st.markdown("---")
-    st.header("⚡ Registro de Operaciones en Tiempo Real")
-    
-    logs_operaciones = []
-    cambio_ejecutado = False 
-    
-    for par in criptomonedas:
-        df_historico = obtener_datos_historicos_yahoo(par)
-        if df_historico.empty:
-            continue
-            
-        ultima_vela = df_historico.iloc[-1]
-        precio_real = float(ultima_vela['close'])
-        ema50 = ultima_vela['EMA_50']
-        ema200 = ultima_vela['EMA_200']
-        
-        tiene_div_alcista = bool(ultima_vela['div_alcista'])
-        tiene_div_bajista = bool(ultima_vela['div_bajista'])
-        
-        patron_alcista = (precio_real > ema50 and ema50 > ema200) or tiene_div_alcista
-        patron_bajista = (precio_real < ema50 and ema50 < ema200) or tiene_div_bajista
-        
-        posicion = datos_simulador["portafolio"][par]
-        
-        # 1. LÓGICA DE GESTIÓN DE POSICIONES ABIERTAS
-        if posicion["comprado"]:
-            if precio_real > posicion["precio_maximo_alcanzado"]:
-                posicion["precio_maximo_alcanzado"] = precio_real
-                guardar_saldo_simulado(datos_simulador)
-            
-            caida_desde_maximo = ((posicion["precio_maximo_alcanzado"] - precio_real) / posicion["precio_maximo_alcanzado"]) * 100
-            
-            if caida_desde_maximo >= porcentaje_trailing or patron_bajista:
+            # INTENTO 1: Descarga nativa y rápida con yfinance
+            try:
+                ticker_obj = yf.Ticker(par)
+                df_historico = ticker_obj.history(period="1d", interval="1m")
+                
+                if not df_historico.empty:
+                    df_historico = df_historico.reset_index()
+                    df_historico.columns = df_historico.columns.str.lower()
+                    df_historico = df_historico.ffill().bfill()
+                    
+                    # Intentamos capturar el último tick rápido inyectado por Yahoo
+                    try:
+                        precio_real = float(ticker_obj.fast_info['last_price'])
+                        if precio_real > 0:
+                            df_historico.loc[df_historico.index[-1], 'close'] = precio_real
+                    except:
+                        precio_real = float(df_historico.iloc[-1]['close'])
+            except:
                 pass
 
-    if cambio_ejecutado:
-        st.rerun()
-    
-    time.sleep(1)
-    st.rerun()
+            # INTENTO 2 (Respaldo): Si el intento 1 falló, descargamos por lote limpio
+            if df_historico.empty:
+                try:
+                    df_historico = yf.download(par, period="1d", interval="1m", progress=False)
+                    if not df_historico.empty:
+                        df_historico = df_historico.reset_index()
+                        df_historico.columns = df_historico.columns.str.lower()
+                        df_historico = df_historico.ffill().bfill()
+                        precio_real = float(df_historico.iloc[-1]['close'])
+                except:
+                    pass
+
+            # Si ambos métodos fallan por temas de red, pintamos el error controlado
+            if df_historico.empty:
+                st.error(f"Error en datos de {par}")
+                continue
+            
+            # Cálculos matemáticos garantizados con datos limpios
+            df_historico['EMA_50'] = df_historico['close'].ewm(span=50, adjust=False).mean()
+            df_historico['EMA_200'] = df_historico['close'].ewm(span=200, adjust=False).mean()
+            df_historico['RSI'] = calcular_rsi(df_historico['close'], 14)
+            
+            ultima_vela = df_historico.iloc[-1]
+            ema50 = ultima_vela['EMA_50']
+            ema200 = ultima_vela['EMA_200']
+            rsi_actual = ultima_vela['RSI']
+
+            st.subheader(f"🪙 {par.replace('-','/')}")
+            st.metric(label="Precio en Vivo", value=f"${precio_real:,.2f} USD")
+            st.write(f"📊 **RSI (14m):** {rsi_actual:.2f}")
+            
+            if ema50 > ema200:
+                st.success("📈 Estructura: Cruce Alcista (Golden Cross)")
+                tendencia_alcista = True
+            else:
+                st.error("📉 Estructura: Cruce Bajista (Death Cross)")
+                tendencia_alcista = False
                 
+            # --- MOTOR DE DECISIÓN BIDIRECCIONAL CON REGLAS FLEXIBLES ---
+            posicion = datos_simulador["portafolio"][par]
+            
+            if bot_activo:
+                if tendencia_alcista:
+                    # Entrada Long
+                    if not posicion["comprado"] and rsi_actual < 45:
+                        if datos_simulador["saldo_usdt"] >= capital_operacion:
+                            cantidad = (capital_operacion * (1 - comision_broker)) / precio_real
+                            datos_simulador["saldo_usdt"] -= capital_operacion
+                            posicion["comprado"] = True
+                            posicion["tipo_posicion"] = "LONG"
+                            posicion["precio_entrada"] = precio_real
+                            posicion["precio_maximo_alcanzado"] = precio_real
+                            posicion["cantidad"] = cantidad
+                            datos_simulador["historial_v2"].append({
+                                "fecha": str(pd.Timestamp.now()), "par": par, "tipo": "ENTRADA LONG", "precio": precio_real
+                            })
+                            guardar_saldo_simulado(datos_simulador)
+                            st.toast(f"🚀 Long abierto en {par}")
+                    
+                    # Salida Long
+                    elif posicion["comprado"] and posicion["tipo_posicion"] == "LONG":
+                        if precio_real > posicion["precio_maximo_alcanzado"]:
+                            posicion["precio_maximo_alcanzado"] = precio_real
+                            guardar_saldo_simulado(datos_simulador)
+                        precio_stop = posicion["precio_maximo_alcanzado"] * (1 - (porcentaje_trailing / 100))
+                        if precio_real <= precio_stop or rsi_actual > 75:
+                            retorno_usdt = (posicion["cantidad"] * precio_real) * (1 - comision_broker)
+                            datos_simulador["saldo_usdt"] += retorno_usdt
+                            datos_simulador["historial_v2"].append({
+                                "fecha": str(pd.Timestamp.now()), "par": par, "tipo": "CIERRE LONG (STOP LOSS)", "precio": precio_real
+                            })
+                            posicion["comprado"] = False; posicion["tipo_posicion"] = None
+                            guardar_saldo_simulado(datos_simulador)
+                            st.toast(f"🛑 Stop Loss Long en {par}")
+
+                else:
+                    # Entrada Short (Flexibilizado a 40 para activar pruebas de inmediato)
+                    if not posicion["comprado"] and rsi_actual > 40:
+                        if datos_simulador["saldo_usdt"] >= capital_operacion:
+                            cantidad = (capital_operacion * (1 - comision_broker)) / precio_real
+                            datos_simulador["saldo_usdt"] -= capital_operacion
+                            posicion["comprado"] = True
+                            posicion["tipo_posicion"] = "SHORT"
+                            posicion["precio_entrada"] = precio_real
+                            posicion["precio_maximo_alcanzado"] = precio_real
+                            posicion["cantidad"] = cantidad
+                            datos_simulador["historial_v2"].append({
+                                "fecha": str(pd.Timestamp.now()), "par": par, "tipo": "ENTRADA SHORT", "precio": precio_real
+                            })
+                            guardar_saldo_simulado(datos_simulador)
+                            st.toast(f"📉 Short abierto en {par}")
+                    
+                    # Salida Short
+                    elif posicion["comprado"] and posicion["tipo_posicion"] == "SHORT":
+                        if precio_real < posicion["precio_maximo_alcanzado"] or posicion["precio_maximo_alcanzado"] == 0:
+                            posicion["precio_maximo_alcanzado"] = precio_real
+                            guardar_saldo_simulado(datos_simulador)
+                        precio_stop = posicion["precio_maximo_alcanzado"] * (1 + (porcentaje_trailing / 100))
+                        if precio_real >= precio_stop or rsi_actual < 30:
+                            diferencia_precio = posicion["precio_entrada"] - precio_real
+                            beneficio = posicion["cantidad"] * diferencia_precio
+                            retorno_usdt = (capital_operacion + beneficio) * (1 - comision_broker)
+                            datos_simulador["saldo_usdt"] += retorno_usdt
+                            datos_simulador["historial_v2"].append({
+                                "fecha": str(pd.Timestamp.now()), "par": par, "tipo": "CIERRE SHORT (STOP LOSS)", "precio": precio_real
+                            })
+                            posicion["comprado"] = False; posicion["tipo_posicion"] = None
+                            guardar_saldo_simulado(datos_simulador)
+                            st.toast(f"🛑 Stop Loss Short en {par}")
+
+            if posicion["comprado"]:
+                st.markdown(f"💼 **Posición {posicion['tipo_posicion']} Activa**")
+                st.info(f"Cantidad: {posicion['cantidad']:.4f}\n\nEntrada: ${posicion['precio_entrada']:.2f}")
+            else:
+                st.text("💤 Esperando señal ideal...")
+
+            # --- RENDERS DE GRÁFICOS ---
+            df_reciente = df_historico.tail(30)
+            eje_x = df_reciente['datetime'] if 'datetime' in df_reciente.columns else df_reciente.index
+            fig = go.Figure()
+            fig.add_trace(go.Candlestick(
+                x=eje_x, open=df_reciente['open'], high=df_reciente['high'],
+                low=df_reciente['low'], close=df_reciente['close'], name='Velas'
+            ))
+            fig.update_layout(xaxis_rangeslider_visible=False, height=220, margin=dict(l=5, r=5, t=5, b=5))
+            st.plotly_chart(fig, use_container_width=True)
+
+    # --- REPORTE DE HISTORIAL ---
+    st.markdown("---")
+    st.subheader("📜 Bitácora de Transacciones Virtuales en Tiempo Real")
+    if datos_simulador["historial_v2"]:
+        df_historial = pd.DataFrame(datos_simulador["historial_v2"])
+        st.dataframe(df_historial.tail(10), use_container_width=True)
+    else:
+        st.caption("Aún no se han ejecutado transacciones ficticias.")
+
+# Llamamos a la función al final del archivo
+mostrar_mercado_y_operar()

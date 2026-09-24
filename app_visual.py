@@ -8,18 +8,22 @@ import feedparser
 import json
 import os
 import plotly.graph_objects as go
+import nltk
+import requests
 
 # --- CONFIGURACIÓN DE INTERFAZ PROFESIONAL ---
 st.set_page_config(page_title="Algoritmo Cuantitativo Cloud 24/7", page_icon="🤖", layout="wide")
 
-# Descarga segura del diccionario VADER para análisis de texto
-import nltk
-try:
-    nltk.data.find('sentiment/vader_lexicon.zip')
-except LookupError:
-    nltk.download('vader_lexicon', quiet=True)
+# Inicialización segura de NLTK en memoria global
+@st.cache_resource
+def inicializar_analizador_sentimiento():
+    try:
+        nltk.data.find('sentiment/vader_lexicon.zip')
+    except LookupError:
+        nltk.download('vader_lexicon', quiet=True)
+    return SentimentIntensityAnalyzer()
 
-sia = SentimentIntensityAnalyzer()
+sia = inicializar_analizador_sentimiento()
 DB_FILE = "estado_simulador_app.json"
 
 # --- GESTIÓN ROBUSTA DE BASE DE DATOS LOCAL (JSON) ---
@@ -73,11 +77,20 @@ def calcular_rsi(series, period=14):
     rs = gain / (loss + 1e-10)
     return 100 - (100 / (1 + rs))
 
-@st.cache_data(ttl=30)
+# Conexión directa a CoinGecko para precio vivo real y Yahoo para el gráfico histórico
+@st.cache_data(ttl=2)
 def obtener_datos_historicos_yahoo(ticker):
     try:
+        id_crypto = "bitcoin" if "BTC" in ticker else "ethereum" if "ETH" in ticker else "solana"
+        
+        # 1. Traer precio exacto en tiempo real de CoinGecko
+        url_precio = f"https://coingecko.com{id_crypto}&vs_currencies=usd"
+        respuesta = requests.get(url_precio, timeout=5).json()
+        precio_vivo = float(respuesta[id_crypto]['usd'])
+        
+        # 2. Traer el historial para las gráficas y las EMAs
         ticker_obj = yf.Ticker(ticker)
-        df = ticker_obj.history(period="1y", interval="1d")
+        df = ticker_obj.history(period="1d", interval="1m")
         
         if df.empty:
             return pd.DataFrame()
@@ -85,6 +98,9 @@ def obtener_datos_historicos_yahoo(ticker):
         df = df.reset_index()
         df.columns = df.columns.str.lower()
         df = df.ffill().bfill()
+        
+        # Forzamos que la última vela tenga el precio real en vivo de CoinGecko
+        df.loc[df.index[-1], 'close'] = precio_vivo
         
         df['EMA_50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['EMA_200'] = df['close'].ewm(span=200, adjust=False).mean()
@@ -95,10 +111,26 @@ def obtener_datos_historicos_yahoo(ticker):
         
         return df
     except Exception as e:
+        # Respaldo de seguridad si CoinGecko excede la cuota gratuita
+        try:
+            ticker_obj = yf.Ticker(ticker)
+            df = ticker_obj.history(period="1d", interval="1m")
+            if not df.empty:
+                df = df.reset_index()
+                df.columns = df.columns.str.lower()
+                df = df.ffill().bfill()
+                df['EMA_50'] = df['close'].ewm(span=50, adjust=False).mean()
+                df['EMA_200'] = df['close'].ewm(span=200, adjust=False).mean()
+                df['RSI'] = calcular_rsi(df['close'], 14)
+                df['div_alcista'] = False
+                df['div_bajista'] = False
+                return df
+        except:
+            pass
         return pd.DataFrame()
 
 # --- INTERFAZ ---
-st.title("🤖 Servidor Cuantitativo Autónomo 24/7 (Inmune a Bloqueos)")
+st.title("🤖 Servidor Cuantitativo Autónoma 24/7 (Inmune a Bloqueos)")
 st.markdown("---")
 
 # --- PANEL DE CONTROL ---
@@ -153,12 +185,9 @@ for i, par in enumerate(criptomonedas):
         ema50 = ultima_vela['EMA_50']
         ema200 = ultima_vela['EMA_200']
         rsi_actual = ultima_vela['RSI']
-        
-        tiene_div_alcista = bool(ultima_vela['div_alcista'])
-        tiene_div_bajista = bool(ultima_vela['div_bajista'])
 
         st.subheader(f"🪙 {par.replace('-','/')}")
-        st.metric(label="Precio en Vivo (Yahoo)", value=f"${precio_real:,.2f} USD")
+        st.metric(label="Precio en Vivo", value=f"${precio_real:,.2f} USD")
         
         st.write(f"📊 **RSI (14 días):** {rsi_actual:.2f}")
         if ema50 > ema200:
@@ -185,6 +214,9 @@ if bot_activo:
     st.markdown("---")
     st.header("⚡ Registro de Operaciones en Tiempo Real")
     
+    logs_operaciones = []
+    cambio_ejecutado = False 
+    
     for par in criptomonedas:
         df_historico = obtener_datos_historicos_yahoo(par)
         if df_historico.empty:
@@ -203,35 +235,20 @@ if bot_activo:
         
         posicion = datos_simulador["portafolio"][par]
         
-        # LÓGICA DE COMPRA (LONG)
-        if not posicion["comprado"] and patron_alcista:
-            if datos_simulador["saldo_usdt"] >= capital_operacion:
-                cantidad_comprada = (capital_operacion * (1 - comision_broker)) / precio_real
-                datos_simulador["saldo_usdt"] -= capital_operacion
-                
-                datos_simulador["portafolio"][par] = {
-                    "comprado": True,
-                    "tipo_posicion": "LONG",
-                    "precio_entrada": precio_real,
-                    "precio_maximo_alcanzado": precio_real,
-                    "cantidad": cantidad_comprada
-                }
-                guardar_saldo_simulado(datos_simulador)
-                st.success(f"🚀 **Orden de COMPRA ejecutada:** {par} a ${precio_real:,.2f} USD")
-                st.rerun()
-                
-        # LÓGICA DE VENTA (TRAILING STOP)
-        elif posicion["comprado"] and posicion["tipo_posicion"] == "LONG":
+        # 1. LÓGICA DE GESTIÓN DE POSICIONES ABIERTAS
+        if posicion["comprado"]:
             if precio_real > posicion["precio_maximo_alcanzado"]:
-                datos_simulador["portafolio"][par]["precio_maximo_alcanzado"] = precio_real
+                posicion["precio_maximo_alcanzado"] = precio_real
                 guardar_saldo_simulado(datos_simulador)
             
-            precio_stop_trailing = posicion["precio_maximo_alcanzado"] * (1 - (porcentaje_trailing / 100))
+            caida_desde_maximo = ((posicion["precio_maximo_alcanzado"] - precio_real) / posicion["precio_maximo_alcanzado"]) * 100
             
-            if precio_real <= precio_stop_trailing or patron_bajista:
-                retorno_usdt = (posicion["cantidad"] * precio_real) * (1 - comision_broker)
-                ganancia_perdida = retorno_usdt - capital_operacion
-                datos_simulador["saldo_usdt"] += retorno_usdt
+            if caida_desde_maximo >= porcentaje_trailing or patron_bajista:
+                pass
+
+    if cambio_ejecutado:
+        st.rerun()
+    
+    time.sleep(1)
+    st.rerun()
                 
-                # Almacenamiento seguro por strings sencillos separados por comas para evitar errores de sintaxis
-                texto_registro = f"{par.replace('-','/')},LONG,{posicion['precio_entrada']},{precio_real},{round(ganancia_perdida, 2)},{time.strftime('%Y-%m-%d %H:%M:%S')}"

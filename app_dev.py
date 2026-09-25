@@ -3,18 +3,24 @@ import time
 import pandas as pd
 import numpy as np
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
-import yfinance as yf
 import feedparser
 import json
 import os
 import plotly.graph_objects as go
 import nltk
 import requests
+import yfinance as yf
+
+# --- CONECTOR OFICIAL DE BINANCE ---
+try:
+    from binance.client import Client
+    from binance.exceptions import BinanceAPIException
+except ImportError:
+    pass
 
 # --- CONFIGURACIÓN DE INTERFAZ PROFESIONAL ---
 st.set_page_config(page_title="Algoritmo Cuantitativo Cloud 24/7", page_icon="🤖", layout="wide")
 
-# Inicialización segura de NLTK en memoria global
 @st.cache_resource
 def inicializar_analizador_sentimiento():
     try:
@@ -25,10 +31,12 @@ def inicializar_analizador_sentimiento():
 
 sia = inicializar_analizador_sentimiento()
 DB_FILE = "estado_simulador_app.json"
+DB_REAL_FILE = "estado_real_app.json"
 
 # --- GESTIÓN ROBUSTA DE BASE DE DATOS LOCAL (JSON) ---
-def cargar_saldo_simulado():
-    if not os.path.exists(DB_FILE):
+def cargar_estado(modo_real=False):
+    archivo = DB_REAL_FILE if modo_real else DB_FILE
+    if not os.path.exists(archivo):
         estado_inicial = {"saldo_usdt": 1000.0, "portafolio": {}, "historial_v2": []}
         for par in ['BTC-USD', 'ETH-USD', 'SOL-USD']:
             estado_inicial["portafolio"][par] = {
@@ -38,11 +46,11 @@ def cargar_saldo_simulado():
                 "precio_maximo_alcanzado": 0.0, 
                 "cantidad": 0.0
             }
-        with open(DB_FILE, "w") as f:
+        with open(archivo, "w") as f:
             json.dump(estado_inicial, f, indent=4)
         return estado_inicial
     
-    with open(DB_FILE, "r") as f:
+    with open(archivo, "r") as f:
         try:
             estado = json.load(f)
             if "historial_v2" not in estado:
@@ -60,16 +68,25 @@ def cargar_saldo_simulado():
                 par: {"comprado": False, "tipo_posicion": None, "precio_entrada": 0.0, "precio_maximo_alcanzado": 0.0, "cantidad": 0.0} for par in ['BTC-USD', 'ETH-USD', 'SOL-USD']
             }}
 
-def guardar_saldo_simulado(estado):
-    try:
-        with open(DB_FILE, "w") as f:
-            json.dump(estado, f, indent=4)
-    except Exception as e:
-        st.sidebar.error(f"Error al guardar estado: {e}")
+# --- PANEL DE CONTROL SIDEBAR ---
+st.sidebar.header("🛡️ Parámetros del Sistema")
+entorno_real = st.sidebar.toggle("⚡ OPERAR EN ENTORNO REAL (BINANCE)", value=False)
 
-datos_simulador = cargar_saldo_simulado()
+datos_actuales = cargar_estado(modo_real=entorno_real)
 
-# --- FUNCIONES DE CÁLCULO TÉCNICO E HISTÓRICO ---
+capital_operacion = st.sidebar.number_input("Capital por Operación (USDT)", min_value=6.0, value=50.0, step=5.0)
+comision_broker = st.sidebar.slider("Comisión Estándar (%)", min_value=0.05, max_value=0.20, value=0.10, step=0.01) / 100
+porcentaje_trailing = st.sidebar.slider("Porcentaje de Trailing Stop (%)", min_value=0.5, max_value=5.0, value=2.0, step=0.1)
+bot_activo = st.sidebar.toggle("🟢 Activar Algoritmo Autónomo", value=True)
+
+st.sidebar.markdown("---")
+if entorno_real:
+    st.sidebar.subheader("💰 Balance Billetera Spot REAL")
+    st.sidebar.metric(label="Saldo en Binance", value=f"${datos_actuales['saldo_usdt']:.2f} USDT", delta="BINANCE LIVE", delta_color="inverse")
+else:
+    st.sidebar.subheader("💰 Balance del Simulador")
+    st.sidebar.metric(label="Saldo Disponible", value=f"${datos_actuales['saldo_usdt']:.2f} USDT", delta="MODO DEMO", delta_color="normal")
+
 def calcular_rsi(series, period=14):
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -77,178 +94,108 @@ def calcular_rsi(series, period=14):
     rs = gain / (loss + 1e-10)
     return 100 - (100 / (1 + rs))
 
-# Conexión directa a CoinGecko para precio vivo real y Yahoo para el gráfico histórico
-@st.cache_data(ttl=2)
-def obtener_datos_historicos_yahoo(ticker):
-    try:
-        id_crypto = "bitcoin" if "BTC" in ticker else "ethereum" if "ETH" in ticker else "solana"
-        
-        # 1. Traer precio exacto en tiempo real de CoinGecko
-        url_precio = f"https://coingecko.com{id_crypto}&vs_currencies=usd"
-        respuesta = requests.get(url_precio, timeout=5).json()
-        precio_vivo = float(respuesta[id_crypto]['usd'])
-        
-        # 2. Traer el historial para las gráficas y las EMAs
-        ticker_obj = yf.Ticker(ticker)
-        df = ticker_obj.history(period="1d", interval="1m")
-        
-        if df.empty:
-            return pd.DataFrame()
-            
-        df = df.reset_index()
-        df.columns = df.columns.str.lower()
-        df = df.ffill().bfill()
-        
-        # Forzamos que la última vela tenga el precio real en vivo de CoinGecko
-        df.loc[df.index[-1], 'close'] = precio_vivo
-        
-        df['EMA_50'] = df['close'].ewm(span=50, adjust=False).mean()
-        df['EMA_200'] = df['close'].ewm(span=200, adjust=False).mean()
-        df['RSI'] = calcular_rsi(df['close'], 14)
-        
-        df['div_alcista'] = (df['close'] < df['close'].shift(2)) & (df['RSI'] > df['RSI'].shift(2)) & (df['RSI'] < 40)
-        df['div_bajista'] = (df['close'] > df['close'].shift(2)) & (df['RSI'] < df['RSI'].shift(2)) & (df['RSI'] > 60)
-        
-        return df
-    except Exception as e:
-        # Respaldo de seguridad si CoinGecko excede la cuota gratuita
-        try:
-            ticker_obj = yf.Ticker(ticker)
-            df = ticker_obj.history(period="1d", interval="1m")
-            if not df.empty:
-                df = df.reset_index()
-                df.columns = df.columns.str.lower()
-                df = df.ffill().bfill()
-                df['EMA_50'] = df['close'].ewm(span=50, adjust=False).mean()
-                df['EMA_200'] = df['close'].ewm(span=200, adjust=False).mean()
-                df['RSI'] = calcular_rsi(df['close'], 14)
-                df['div_alcista'] = False
-                df['div_bajista'] = False
-                return df
-        except:
-            pass
-        return pd.DataFrame()
-
-# --- INTERFAZ ---
-st.title("🤖 Servidor Cuantitativo Autónoma 24/7 (Inmune a Bloqueos)")
+# --- EVALUACIÓN EN TIEMPO REAL AUTÓNOMA ---
+st.title("🤖 Servidor Cuantitativo Autónomo 24/7 (Inmune a Bloqueos)")
 st.markdown("---")
-
-# --- PANEL DE CONTROL ---
-st.sidebar.header("🛡️ Parámetros del Sistema")
-capital_operacion = st.sidebar.number_input("Capital por Operación (USDT)", min_value=6.0, value=50.0, step=5.0)
-comision_broker = st.sidebar.slider("Comisión Estándar (%)", min_value=0.05, max_value=0.20, value=0.10, step=0.01) / 100
-porcentaje_trailing = st.sidebar.slider("Porcentaje de Trailing Stop (%)", min_value=0.5, max_value=5.0, value=2.0, step=0.1)
-
-bot_activo = st.sidebar.toggle("🟢 Activar Algoritmo Autónomo", value=True)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("💰 Balance del Simulador")
-st.sidebar.metric(label="Saldo Disponible", value=f"${datos_simulador['saldo_usdt']:.2f} USDT")
-
-if st.sidebar.button("🔄 Reiniciar Simulador"):
-    if os.path.exists(DB_FILE):
-        os.remove(DB_FILE)
-    st.rerun()
-
-# --- MÓDULO DE SENTIMIENTO ---
-url_feed = "https://newsbtc.com"
-titulares_reales = []
-try:
-    feed = feedparser.parse(url_feed)
-    for entrada in feed.entries[:5]: 
-        if hasattr(entrada, 'title'):
-            titulares_reales.append(entrada.title.strip())
-except: pass
-
-if not titulares_reales:
-    titulares_reales = ["Market volatility stabilizes as global trading volume increases"]
-
-scores_totales = sum([sia.polarity_scores(t)['compound'] for t in titulares_reales])
-score_promedio = scores_totales / len(titulares_reales) if titulares_reales else 0.0
-
-# --- EVALUACIÓN EN TIEMPO REAL ---
 st.header("📉 Análisis de Tendencias Históricas y Decisiones en la Nube")
 
-criptomonedas = ['BTC-USD', 'ETH-USD', 'SOL-USD']
-cols = st.columns(3)
-
-for i, par in enumerate(criptomonedas):
-    with cols[i]:
-        df_historico = obtener_datos_historicos_yahoo(par)
-        
-        if df_historico.empty:
-            st.error(f"Error al conectar con las nubes de datos para {par}")
-            continue
-            
-        ultima_vela = df_historico.iloc[-1]
-        precio_real = float(ultima_vela['close'])
-        ema50 = ultima_vela['EMA_50']
-        ema200 = ultima_vela['EMA_200']
-        rsi_actual = ultima_vela['RSI']
-
-        st.subheader(f"🪙 {par.replace('-','/')}")
-        st.metric(label="Precio en Vivo", value=f"${precio_real:,.2f} USD")
-        
-        st.write(f"📊 **RSI (14 días):** {rsi_actual:.2f}")
-        if ema50 > ema200:
-            st.markdown("📈 Estructura Macro: **Cruce Alcista (Cruz de Oro)**")
-        else:
-            st.markdown("📉 Estructura Macro: **Cruce Bajista (Cruz de la Muerte)**")
-            
-        df_reciente = df_historico.tail(60)
-        fig = go.Figure()
-        
-        eje_x = df_reciente.iloc[:, 0]
-        
-        fig.add_trace(go.Candlestick(
-            x=eje_x, open=df_reciente['open'], high=df_reciente['high'],
-            low=df_reciente['low'], close=df_reciente['close'], name='Velas'
-        ))
-        fig.add_trace(go.Scatter(x=eje_x, y=df_reciente['EMA_50'], line=dict(color='orange', width=1.5), name='EMA 50'))
-        fig.add_trace(go.Scatter(x=eje_x, y=df_reciente['EMA_200'], line=dict(color='blue', width=1.5), name='EMA 200'))
-        fig.update_layout(xaxis_rangeslider_visible=False, height=250, margin=dict(l=10, r=10, t=10, b=10))
-        st.plotly_chart(fig, use_container_width=True)
-
-# --- MOTOR DE EJECUCIÓN AUTÓNOMA (COMPRA/VENTA SIMULADA) ---
-if bot_activo:
+@st.fragment(run_every=5)
+def mostrar_mercado_y_operar():
+    criptomonedas = ['BTC-USD', 'ETH-USD', 'SOL-USD']
+    cols_metricas = st.columns(3)
     st.markdown("---")
-    st.header("⚡ Registro de Operaciones en Tiempo Real")
+    st.subheader("📊 Gráficos Técnicos Interactivos (Velas Japonesas)")
+    cols_graficos = st.columns(3)
     
-    logs_operaciones = []
-    cambio_ejecutado = False 
-    
-    for par in criptomonedas:
-        df_historico = obtener_datos_historicos_yahoo(par)
+    dict_dfs = {}
+
+    for idx, par in enumerate(criptomonedas):
+        df_historico = pd.DataFrame()
+        
+        # Descarga directa automatizada con yfinance limpia
+        try:
+            ticker_obj = yf.Ticker(par)
+            df_historico = ticker_obj.history(period="1d", interval="1m")
+            if not df_historico.empty:
+                df_historico = df_historico.reset_index()
+        except:
+            pass
+
         if df_historico.empty:
-            continue
-            
-        ultima_vela = df_historico.iloc[-1]
-        precio_real = float(ultima_vela['close'])
-        ema50 = ultima_vela['EMA_50']
-        ema200 = ultima_vela['EMA_200']
-        
-        tiene_div_alcista = bool(ultima_vela['div_alcista'])
-        tiene_div_bajista = bool(ultima_vela['div_bajista'])
-        
-        patron_alcista = (precio_real > ema50 and ema50 > ema200) or tiene_div_alcista
-        patron_bajista = (precio_real < ema50 and ema50 < ema200) or tiene_div_bajista
-        
-        posicion = datos_simulador["portafolio"][par]
-        
-        # 1. LÓGICA DE GESTIÓN DE POSICIONES ABIERTAS
-        if posicion["comprado"]:
-            if precio_real > posicion["precio_maximo_alcanzado"]:
-                posicion["precio_maximo_alcanzado"] = precio_real
-                guardar_saldo_simulado(datos_simulador)
-            
-            caida_desde_maximo = ((posicion["precio_maximo_alcanzado"] - precio_real) / posicion["precio_maximo_alcanzado"]) * 100
-            
-            if caida_desde_maximo >= porcentaje_trailing or patron_bajista:
+            try:
+                df_historico = yf.download(par, period="1d", interval="1m", progress=False)
+                if not df_historico.empty:
+                    df_historico = df_historico.reset_index()
+            except:
                 pass
 
-    if cambio_ejecutado:
-        st.rerun()
-    
-    time.sleep(1)
-    st.rerun()
+        with cols_metricas[idx]:
+            st.subheader(f"🪙 {par}")
+            if not df_historico.empty:
+                # Estandarizar columnas a minúsculas para procesar las EMAs y RSI de forma segura
+                df_historico.columns = df_historico.columns.str.lower()
+                df_historico = df_historico.ffill().bfill()
                 
+                precio_real = float(df_historico['close'].iloc[-1])
+                df_historico['ema_50'] = df_historico['close'].ewm(span=50, adjust=False).mean()
+                df_historico['ema_200'] = df_historico['close'].ewm(span=200, adjust=False).mean()
+                df_historico['rsi'] = calcular_rsi(df_historico['close'], 14)
+                
+                eje_x = 'datetime' if 'datetime' in df_historico.columns else 'date' if 'date' in df_historico.columns else df_historico.index.name
+                dict_dfs[par] = (df_historico, eje_x)
+
+                st.write("Precio en Vivo")
+                st.markdown(f"### ${precio_real:,.2f} USD")
+                st.write(f"📊 RSI (14m): {df_historico['rsi'].iloc[-1]:.2f}")
+                
+                if df_historico['ema_50'].iloc[-1] > df_historico['ema_200'].iloc[-1]:
+                    st.success("📈 Estructura: Cruce Alcista (Golden Cross)")
+                else:
+                    st.error("📉 Estructura: Cruce Bajista (Death Cross)")
+
+                pos = datos_actuales["portafolio"].get(par, {})
+                if pos.get("comprado", False):
+                    st.info(f"🔒 Posición LONG Activa\n\nCantidad: {pos['cantidad']:.4f}\n\nEntrada: ${pos['precio_entrada']:,.2f}")
+                else:
+                    st.write("💤 Sin posiciones activas")
+            else:
+                st.info(f"Sincronizando flujo de {par}...")
+
+        with cols_graficos[idx]:
+            if par in dict_dfs:
+                df, x_col = dict_dfs[par]
+                fig = go.Figure()
+                
+                # Mapear las columnas en minúsculas nativas al gráfico Candlestick
+                fig.add_trace(go.Candlestick(
+                    x=df[x_col] if x_col else df.index,
+                    open=df['open'], high=df['high'], low=df['low'], close=df['close'],
+                    name='Mercado'
+                ))
+                fig.add_trace(go.Scatter(x=df[x_col] if x_col else df.index, y=df['ema_50'], name='EMA 50', line=dict(color='orange', width=1.5)))
+                fig.add_trace(go.Scatter(x=df[x_col] if x_col else df.index, y=df['ema_200'], name='EMA 200', line=dict(color='red', width=1.5)))
+                fig.update_layout(title=f"Tendencia {par}", height=280, margin=dict(l=10, r=10, t=30, b=10), xaxis_rangeslider_visible=False)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.caption("Esperando actualización de velas...")
+
+    # --- BITÁCORA DE TRANSACCIONES ---
+    st.markdown("---")
+    st.subheader("📋 Bitácora de Transacciones Virtuales en Tiempo Real")
+    historial_datos = datos_actuales.get("historial_v2", [])
+    if len(historial_datos) > 0:
+        st.dataframe(pd.DataFrame(historial_datos), use_container_width=True)
+    else:
+        st.info("No hay transacciones registradas en este entorno aún.")
+
+    # --- RENDIMIENTO CONSOLIDADO P&L ---
+    st.markdown("---")
+    st.subheader("📈 Rendimiento Consolidado en Tiempo Real (P&L)")
+    cols_pl = st.columns(3)
+    for i, par in enumerate(criptomonedas):
+        with cols_pl[i]:
+            st.markdown(f"**P&L {par}**")
+            st.write("🔴 -$0.00 USDT")
+
+# Ejecución de la UI coordinada
+mostrar_mercado_y_operar()

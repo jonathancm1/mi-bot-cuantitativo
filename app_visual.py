@@ -1,4 +1,26 @@
 import streamlit as st
+
+def verificar_contrasena():
+    def clave_ingresada():
+        # CAMBIA AQUÍ TU CONTRASEÑA SECRETA
+        if st.session_state["password_input"] == "canelafull05#": 
+            st.session_state["acceso_concedido"] = True
+            del st.session_state["password_input"]
+        else:
+            st.session_state["acceso_concedido"] = False
+
+    if "acceso_concedido" not in st.session_state:
+        st.title("🔒 Servidor Cuantitativo Protegido")
+        st.text_input("Introduce la contraseña de administrador:", type="password", on_change=clave_ingresada, key="password_input")
+        if "acceso_concedido" in st.session_state and not st.session_state["acceso_concedido"]:
+            st.error("❌ Contraseña incorrecta")
+        return False
+    else:
+        return True
+
+if not verificar_contrasena():
+    st.stop()
+import streamlit as st
 import time
 import pandas as pd
 import numpy as np

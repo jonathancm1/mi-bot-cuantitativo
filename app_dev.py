@@ -70,9 +70,29 @@ def cargar_estado(modo_real=False):
 
 # --- PANEL DE CONTROL SIDEBAR ---
 st.sidebar.header("🛡️ Parámetros del Sistema")
+
+# SWITCH PROFESIONAL DE ENTORNO REAL / SIMULADOR
 entorno_real = st.sidebar.toggle("⚡ OPERAR EN ENTORNO REAL (BINANCE)", value=False)
 
-datos_actuales = cargar_estado(modo_real=entorno_real)
+# CONEXIÓN SEGURA Y AUTENTICACIÓN CON ENTORNO REAL
+cliente_binance = None
+if entorno_real:
+    try:
+        api_key = st.secrets["binance"]["api_key"]
+        api_secret = st.secrets["binance"]["api_secret"]
+        cliente_binance = Client(api_key, api_secret)
+        
+        balance_spot = cliente_binance.get_asset_balance(asset='USDT')
+        saldo_real = float(balance_spot['free']) if balance_spot else 0.0
+        
+        datos_actuales = cargar_estado(modo_real=True)
+        datos_actuales["saldo_usdt"] = saldo_real
+    except Exception as e:
+        st.sidebar.error("⚠️ Error de conexión con Binance. Verifica tus API Keys en Secrets.")
+        entorno_real = False
+        datos_actuales = cargar_estado(modo_real=False)
+else:
+    datos_actuales = cargar_estado(modo_real=False)
 
 capital_operacion = st.sidebar.number_input("Capital por Operación (USDT)", min_value=6.0, value=50.0, step=5.0)
 comision_broker = st.sidebar.slider("Comisión Estándar (%)", min_value=0.05, max_value=0.20, value=0.10, step=0.01) / 100
@@ -86,6 +106,13 @@ if entorno_real:
 else:
     st.sidebar.subheader("💰 Balance del Simulador")
     st.sidebar.metric(label="Saldo Disponible", value=f"${datos_actuales['saldo_usdt']:.2f} USDT", delta="MODO DEMO", delta_color="normal")
+
+if st.sidebar.button("🔄 Reiniciar Entorno Actual"):
+    if not entorno_real:
+        if os.path.exists(DB_FILE): os.remove(DB_FILE)
+        st.rerun()
+    else:
+        st.sidebar.warning("No puedes reiniciar el entorno real desde la app.")
 
 def calcular_rsi(series, period=14):
     delta = series.diff()
@@ -112,7 +139,6 @@ def mostrar_mercado_y_operar():
     for idx, par in enumerate(criptomonedas):
         df_historico = pd.DataFrame()
         
-        # Descarga directa automatizada con yfinance limpia
         try:
             ticker_obj = yf.Ticker(par)
             df_historico = ticker_obj.history(period="1d", interval="1m")
@@ -132,7 +158,6 @@ def mostrar_mercado_y_operar():
         with cols_metricas[idx]:
             st.subheader(f"🪙 {par}")
             if not df_historico.empty:
-                # Estandarizar columnas a minúsculas para procesar las EMAs y RSI de forma segura
                 df_historico.columns = df_historico.columns.str.lower()
                 df_historico = df_historico.ffill().bfill()
                 
@@ -166,7 +191,6 @@ def mostrar_mercado_y_operar():
                 df, x_col = dict_dfs[par]
                 fig = go.Figure()
                 
-                # Mapear las columnas en minúsculas nativas al gráfico Candlestick
                 fig.add_trace(go.Candlestick(
                     x=df[x_col] if x_col else df.index,
                     open=df['open'], high=df['high'], low=df['low'], close=df['close'],
